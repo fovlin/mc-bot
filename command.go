@@ -31,18 +31,18 @@ type incomingMessage struct {
 type bot struct {
 	api      *qqAPI
 	renderer *renderer
+	sessions *sessionStore
 
 	mu        sync.Mutex
-	cfg       *config
 	seen      map[string]struct{}
 	seenOrder []string
 }
 
-func newBot(cfg *config, api *qqAPI, renderer *renderer) *bot {
+func newBot(api *qqAPI, renderer *renderer, sessions *sessionStore) *bot {
 	return &bot{
-		cfg:      cfg,
 		api:      api,
 		renderer: renderer,
+		sessions: sessions,
 		seen:     make(map[string]struct{}),
 	}
 }
@@ -95,10 +95,6 @@ func (b *bot) handleCommand(ctx context.Context, target chatTarget, msgID, conte
 
 	switch fields[0] {
 	case "/server":
-		if target.kind != chatGroup {
-			b.replyText(ctx, target, msgID, 1, "Server management is only available in group chats.")
-			return
-		}
 		b.handleServer(ctx, target, msgID, fields[1:])
 	case "/ls":
 		if len(fields) > 2 {
@@ -126,7 +122,7 @@ func (b *bot) handleServer(ctx context.Context, target chatTarget, msgID string,
 			b.replyText(ctx, target, msgID, 1, "Usage: /server add <name> <address>")
 			return
 		}
-		reply, err := b.addServer(args[1], args[2])
+		reply, err := b.addServer(target, args[1], args[2])
 		if err != nil {
 			log.Printf("[cmd] add server: %v", err)
 			b.replyText(ctx, target, msgID, 1, "Failed to add: "+err.Error())
@@ -138,7 +134,7 @@ func (b *bot) handleServer(ctx context.Context, target chatTarget, msgID string,
 			b.replyText(ctx, target, msgID, 1, "Usage: /server del <name>")
 			return
 		}
-		reply, err := b.delServer(args[1])
+		reply, err := b.delServer(target, args[1])
 		if err != nil {
 			log.Printf("[cmd] delete server: %v", err)
 			b.replyText(ctx, target, msgID, 1, "Failed to delete: "+err.Error())
@@ -151,7 +147,13 @@ func (b *bot) handleServer(ctx context.Context, target chatTarget, msgID string,
 }
 
 func (b *bot) handleList(ctx context.Context, target chatTarget, msgID, name string) {
-	servers := b.servers()
+	sess, err := b.sessions.get(target)
+	if err != nil {
+		log.Printf("[cmd] load session %s: %v", target, err)
+		b.replyText(ctx, target, msgID, 1, "Failed to load session config: "+err.Error())
+		return
+	}
+	servers := sess.snapshot()
 	if len(servers) == 0 {
 		b.replyText(ctx, target, msgID, 1, "No servers configured. Add one with /server add <name> <address>.")
 		return
@@ -229,53 +231,32 @@ func (b *bot) replyText(ctx context.Context, target chatTarget, msgID string, se
 	log.Printf("[cmd] text reply sent msg=%s seq=%d target=%s", msgID, seq, target)
 }
 
-func (b *bot) addServer(name, addr string) (string, error) {
+func (b *bot) addServer(target chatTarget, name, addr string) (string, error) {
 	if err := validateServerName(name); err != nil {
 		return "", err
 	}
 	if err := validateServerAddress(addr); err != nil {
 		return "", err
 	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if _, ok := b.cfg.Servers[name]; ok {
-		return "", fmt.Errorf("server %s already exists; delete it first with /server del %s", name, name)
+	sess, err := b.sessions.get(target)
+	if err != nil {
+		return "", err
 	}
-	next := cloneServers(b.cfg.Servers)
-	next[name] = addr
-	updated := *b.cfg
-	updated.Servers = next
-	if err := updated.save(); err != nil {
-		return "", fmt.Errorf("save config: %w", err)
+	if err := sess.add(name, addr); err != nil {
+		return "", err
 	}
-	b.cfg = &updated
 	return fmt.Sprintf("Added server %s: %s", name, addr), nil
 }
 
-func (b *bot) delServer(name string) (string, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if _, ok := b.cfg.Servers[name]; !ok {
-		return "", fmt.Errorf("server %s not found", name)
+func (b *bot) delServer(target chatTarget, name string) (string, error) {
+	sess, err := b.sessions.get(target)
+	if err != nil {
+		return "", err
 	}
-	next := cloneServers(b.cfg.Servers)
-	delete(next, name)
-	updated := *b.cfg
-	updated.Servers = next
-	if err := updated.save(); err != nil {
-		return "", fmt.Errorf("save config: %w", err)
+	if err := sess.delete(name); err != nil {
+		return "", err
 	}
-	b.cfg = &updated
 	return fmt.Sprintf("Deleted server %s.", name), nil
-}
-
-func (b *bot) servers() map[string]string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return cloneServers(b.cfg.Servers)
 }
 
 // normalizeCommandText removes a leading @mention so full-mode group events
@@ -308,14 +289,6 @@ func (b *bot) seenMessage(id string) bool {
 		delete(b.seen, oldest)
 	}
 	return false
-}
-
-func cloneServers(servers map[string]string) map[string]string {
-	next := make(map[string]string, len(servers))
-	for name, addr := range servers {
-		next[name] = addr
-	}
-	return next
 }
 
 func sortedServers(servers map[string]string) []string {

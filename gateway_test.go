@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestClassifyGatewayError(t *testing.T) {
@@ -26,7 +28,7 @@ func TestClassifyGatewayError(t *testing.T) {
 		{4999, false, true},
 	}
 	for _, tt := range tests {
-		fatal, reset := classifyGatewayError(&wsCloseError{Code: tt.code})
+		fatal, reset := classifyGatewayError(&websocket.CloseError{Code: tt.code})
 		if fatal != tt.fatal || reset != tt.reset {
 			t.Errorf("code %d: fatal=%v reset=%v, want %v/%v", tt.code, fatal, reset, tt.fatal, tt.reset)
 		}
@@ -73,120 +75,96 @@ func TestHeartbeatPayload(t *testing.T) {
 }
 
 func TestSendAuthIdentify(t *testing.T) {
-	client, server := newPipeClient(t)
+	client, server := newWSPair(t)
 	g := newGateway(nil, nil)
-
-	frameCh := make(chan []byte, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		_, payload, _, err := readMaskedFrame(server)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		frameCh <- payload
-	}()
 
 	if err := g.sendAuth(t.Context(), client, "tok"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-errCh:
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := server.ReadMessage()
+	if err != nil {
 		t.Fatal(err)
-	case payload := <-frameCh:
-		var pkt struct {
-			Op int `json:"op"`
-			D  struct {
-				Token   string `json:"token"`
-				Intents int64  `json:"intents"`
-				Shard   []int  `json:"shard"`
-			} `json:"d"`
-		}
-		if err := json.Unmarshal(payload, &pkt); err != nil {
-			t.Fatal(err)
-		}
-		if pkt.Op != 2 {
-			t.Fatalf("op = %d", pkt.Op)
-		}
-		if pkt.D.Token != "QQBot tok" {
-			t.Fatalf("token = %q", pkt.D.Token)
-		}
-		if pkt.D.Intents != intentsGroupAndC2C {
-			t.Fatalf("intents = %d", pkt.D.Intents)
-		}
-		if len(pkt.D.Shard) != 2 || pkt.D.Shard[0] != 0 || pkt.D.Shard[1] != 1 {
-			t.Fatalf("shard = %v", pkt.D.Shard)
-		}
+	}
+
+	var pkt struct {
+		Op int `json:"op"`
+		D  struct {
+			Token   string `json:"token"`
+			Intents int64  `json:"intents"`
+			Shard   []int  `json:"shard"`
+		} `json:"d"`
+	}
+	if err := json.Unmarshal(payload, &pkt); err != nil {
+		t.Fatal(err)
+	}
+	if pkt.Op != 2 {
+		t.Fatalf("op = %d", pkt.Op)
+	}
+	if pkt.D.Token != "QQBot tok" {
+		t.Fatalf("token = %q", pkt.D.Token)
+	}
+	if pkt.D.Intents != intentsGroupAndC2C {
+		t.Fatalf("intents = %d", pkt.D.Intents)
+	}
+	if len(pkt.D.Shard) != 2 || pkt.D.Shard[0] != 0 || pkt.D.Shard[1] != 1 {
+		t.Fatalf("shard = %v", pkt.D.Shard)
 	}
 }
 
 func TestSendAuthResume(t *testing.T) {
-	client, server := newPipeClient(t)
+	client, server := newWSPair(t)
 	g := newGateway(nil, nil)
 	g.setSessionID("session-1")
 	g.setSeq(7)
 
-	frameCh := make(chan []byte, 1)
-	go func() {
-		_, payload, _, err := readMaskedFrame(server)
-		if err != nil {
-			return
-		}
-		frameCh <- payload
-	}()
-
 	if err := g.sendAuth(t.Context(), client, "tok"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case payload := <-frameCh:
-		var pkt struct {
-			Op int `json:"op"`
-			D  struct {
-				Token     string `json:"token"`
-				SessionID string `json:"session_id"`
-				Seq       int64  `json:"seq"`
-			} `json:"d"`
-		}
-		if err := json.Unmarshal(payload, &pkt); err != nil {
-			t.Fatal(err)
-		}
-		if pkt.Op != 6 || pkt.D.SessionID != "session-1" || pkt.D.Seq != 7 || pkt.D.Token != "QQBot tok" {
-			t.Fatalf("resume payload = %+v", pkt)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auth frame")
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := server.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var pkt struct {
+		Op int `json:"op"`
+		D  struct {
+			Token     string `json:"token"`
+			SessionID string `json:"session_id"`
+			Seq       int64  `json:"seq"`
+		} `json:"d"`
+	}
+	if err := json.Unmarshal(payload, &pkt); err != nil {
+		t.Fatal(err)
+	}
+	if pkt.Op != 6 || pkt.D.SessionID != "session-1" || pkt.D.Seq != 7 || pkt.D.Token != "QQBot tok" {
+		t.Fatalf("resume payload = %+v", pkt)
 	}
 }
 
 func TestSendAuthIdentifyWhenSeqZero(t *testing.T) {
-	client, server := newPipeClient(t)
+	client, server := newWSPair(t)
 	g := newGateway(nil, nil)
 	g.setSessionID("session-1") // no seq yet: identify, not resume
-
-	frameCh := make(chan byte, 1)
-	go func() {
-		_, payload, _, err := readMaskedFrame(server)
-		if err != nil {
-			return
-		}
-		var pkt struct {
-			Op int `json:"op"`
-		}
-		_ = json.Unmarshal(payload, &pkt)
-		frameCh <- byte(pkt.Op)
-	}()
 
 	if err := g.sendAuth(t.Context(), client, "tok"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case op := <-frameCh:
-		if op != 2 {
-			t.Fatalf("op = %d, want identify (2)", op)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auth frame")
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := server.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var pkt struct {
+		Op int `json:"op"`
+	}
+	if err := json.Unmarshal(payload, &pkt); err != nil {
+		t.Fatal(err)
+	}
+	if pkt.Op != 2 {
+		t.Fatalf("op = %d, want identify (2)", pkt.Op)
 	}
 }
 

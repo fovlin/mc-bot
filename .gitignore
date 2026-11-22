@@ -1,3 +1,5 @@
 /mcbot-go
 /build/
 /.gocache/
+/config/
+/data/

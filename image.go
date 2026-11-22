@@ -26,17 +26,17 @@ const (
 	imgWidth        = 760
 	imgMargin       = 28
 	cardGap         = 20
-	cardPad         = 28
+	cardPad         = 30
 	cardRadius      = 10
-	titleLineHeight = 44
-	bodyLineHeight  = 30
-	labelLineHeight = 20
-	labelGap        = 6
-	metaGap         = 18
-	sectionGap      = 22
-	dividerGap      = 18
-	playerRowHeight = 30
-	smallLineHeight = 22
+	titleLineHeight = 52
+	bodyLineHeight  = 36
+	labelLineHeight = 24
+	labelGap        = 8
+	metaGap         = 20
+	sectionGap      = 26
+	dividerGap      = 20
+	playerRowHeight = 36
+	smallLineHeight = 26
 	maxImgHeight    = 12000
 	playerColumns   = 3
 	maxMOTDLines    = 6
@@ -147,15 +147,15 @@ func newRendererFromFont(f *opentype.Font) (*renderer, error) {
 			Hinting: font.HintingFull,
 		})
 	}
-	title, err := newFace(28)
+	title, err := newFace(34)
 	if err != nil {
 		return nil, fmt.Errorf("create title face: %w", err)
 	}
-	body, err := newFace(17)
+	body, err := newFace(21)
 	if err != nil {
 		return nil, fmt.Errorf("create body face: %w", err)
 	}
-	small, err := newFace(13)
+	small, err := newFace(15)
 	if err != nil {
 		return nil, fmt.Errorf("create small face: %w", err)
 	}
@@ -368,14 +368,14 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 		markerTop = titleBaseline - (titleAscent - titleDescent)
 		markerBottom = titleBaseline
 	}
-	fillRect(img, image.Rect(left, markerTop, left+3, markerBottom), colAccent)
+	fillRect(img, image.Rect(left, markerTop, left+4, markerBottom), colAccent)
 
-	titleX := left + 16
+	titleX := left + 18
 	r.drawString(img, r.title, colTitle, titleX, titleBaseline, c.name)
 
 	statusWidth := measure(r.small, c.statusText)
 	statusX := right - statusWidth
-	fillCircle(img, statusX-16, titleBaseline-5, 4, c.statusColor)
+	fillCircle(img, statusX-18, titleBaseline-6, 5, c.statusColor)
 	r.drawString(img, r.small, c.statusColor, statusX, titleBaseline, c.statusText)
 	cy += titleLineHeight
 

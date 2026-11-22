@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -116,12 +118,37 @@ func (f *fakeQQAPI) messageTargets() []string {
 
 func newTestBot(t *testing.T) (*bot, *fakeQQAPI) {
 	t.Helper()
-	useTempConfigDir(t)
+	t.Chdir(t.TempDir())
 	fake, srv := newFakeQQAPI(t)
-	cfg := &config{AppID: "app", ClientSecret: "secret", Servers: map[string]string{}}
 	api := newQQAPI("app", "secret")
 	api.baseURL = srv.URL
-	return newBot(cfg, api, testRenderer(t)), fake
+	data, err := dataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newBot(api, testRenderer(t), newSessionStore(data)), fake
+}
+
+func setSessionServers(t *testing.T, b *bot, target chatTarget, servers map[string]string) {
+	t.Helper()
+	sess, err := b.sessions.get(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, addr := range servers {
+		if err := sess.add(name, addr); err != nil {
+			t.Fatalf("add %s: %v", name, err)
+		}
+	}
+}
+
+func sessionServers(t *testing.T, b *bot, target chatTarget) map[string]string {
+	t.Helper()
+	sess, err := b.sessions.get(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sess.snapshot()
 }
 
 func TestAddAndDelServer(t *testing.T) {
@@ -129,7 +156,7 @@ func TestAddAndDelServer(t *testing.T) {
 	ctx := context.Background()
 
 	b.handleCommand(ctx, groupTarget("G1"), "M1", "/server add acovia mc.acovia.net")
-	if got := b.cfg.Servers["acovia"]; got != "mc.acovia.net" {
+	if got := sessionServers(t, b, groupTarget("G1"))["acovia"]; got != "mc.acovia.net" {
 		t.Fatalf("server address = %q", got)
 	}
 	msgs := fake.messages()
@@ -140,12 +167,13 @@ func TestAddAndDelServer(t *testing.T) {
 		t.Fatalf("msg_seq = %v", msgs[0]["msg_seq"])
 	}
 
-	loaded, err := loadConfig()
+	sessionFile := filepath.Join("data", "G1", "server.json")
+	data, err := os.ReadFile(sessionFile)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read session config: %v", err)
 	}
-	if loaded.Servers["acovia"] != "mc.acovia.net" {
-		t.Fatalf("saved config = %+v", loaded)
+	if !strings.Contains(string(data), "mc.acovia.net") {
+		t.Fatalf("session config = %s", data)
 	}
 
 	b.handleCommand(ctx, groupTarget("G1"), "M2", "/server add acovia other.example.com")
@@ -155,11 +183,8 @@ func TestAddAndDelServer(t *testing.T) {
 	}
 
 	b.handleCommand(ctx, groupTarget("G1"), "M3", "/server del acovia")
-	if _, ok := b.cfg.Servers["acovia"]; ok {
-		t.Fatal("server not deleted")
-	}
-	if len(b.cfg.Servers) != 0 {
-		t.Fatalf("servers = %v", b.cfg.Servers)
+	if servers := sessionServers(t, b, groupTarget("G1")); len(servers) != 0 {
+		t.Fatalf("servers = %v", servers)
 	}
 	msgs = fake.messages()
 	if !strings.Contains(msgs[len(msgs)-1]["content"].(string), "Deleted server acovia") {
@@ -207,7 +232,7 @@ func TestServerCommandValidation(t *testing.T) {
 func TestListSendsImage(t *testing.T) {
 	b, fake := newTestBot(t)
 	addr := startStatusServer(t, `{"version":{"name":"Test 1.20","protocol":765},"players":{"online":2,"max":10,"sample":[{"name":"alice"},{"name":"bob"}]},"description":"Hello"}`)
-	b.cfg.Servers = map[string]string{"acovia": addr}
+	setSessionServers(t, b, groupTarget("G1"), map[string]string{"acovia": addr})
 
 	b.handleCommand(context.Background(), groupTarget("G1"), "M1", "/ls")
 
@@ -248,7 +273,7 @@ func TestListSendsImage(t *testing.T) {
 func TestListNamedAndUnknown(t *testing.T) {
 	b, fake := newTestBot(t)
 	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":0,"max":1},"description":"x"}`)
-	b.cfg.Servers = map[string]string{"acovia": addr, "other": addr}
+	setSessionServers(t, b, groupTarget("G1"), map[string]string{"acovia": addr, "other": addr})
 
 	b.handleCommand(context.Background(), groupTarget("G1"), "M1", "/ls acovia")
 	if len(fake.messages()) != 1 {
@@ -281,7 +306,7 @@ func TestListUploadFallback(t *testing.T) {
 	fake.filesFail = true
 	fake.mu.Unlock()
 	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":1,"max":2,"sample":[{"name":"a"}]},"description":"x"}`)
-	b.cfg.Servers = map[string]string{"acovia": addr}
+	setSessionServers(t, b, groupTarget("G1"), map[string]string{"acovia": addr})
 
 	b.handleCommand(context.Background(), groupTarget("G1"), "M1", "/ls")
 
@@ -304,7 +329,7 @@ func TestListSendFallbackUsesSeqTwo(t *testing.T) {
 	fake.messageFailures = 1 // the media message fails; the text fallback must use seq 2
 	fake.mu.Unlock()
 	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":1,"max":2,"sample":[{"name":"a"}]},"description":"x"}`)
-	b.cfg.Servers = map[string]string{"acovia": addr}
+	setSessionServers(t, b, groupTarget("G1"), map[string]string{"acovia": addr})
 
 	b.handleCommand(context.Background(), groupTarget("G1"), "M1", "/ls")
 
@@ -438,7 +463,7 @@ func TestListDuplicateMediaSkipsFallback(t *testing.T) {
 	fake.mu.Unlock()
 
 	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":1,"max":2,"sample":[{"name":"a"}]},"description":"x"}`)
-	b.cfg.Servers = map[string]string{"acovia": addr}
+	setSessionServers(t, b, groupTarget("G1"), map[string]string{"acovia": addr})
 	b.handleCommand(context.Background(), groupTarget("G1"), "M1", "/ls")
 
 	msgs := fake.messages()
@@ -453,7 +478,7 @@ func TestListDuplicateMediaSkipsFallback(t *testing.T) {
 func TestPrivateChatList(t *testing.T) {
 	b, fake := newTestBot(t)
 	addr := startStatusServer(t, `{"version":{"name":"Paper 26.3","protocol":777},"players":{"online":0,"max":16},"description":"Welcome"}`)
-	b.cfg.Servers = map[string]string{"acovia": addr}
+	setSessionServers(t, b, userTarget("U1"), map[string]string{"acovia": addr})
 
 	d, _ := json.Marshal(map[string]any{
 		"id":      "M1",
@@ -481,26 +506,37 @@ func TestPrivateChatList(t *testing.T) {
 	}
 }
 
-func TestPrivateChatRejectsServerManagement(t *testing.T) {
+func TestSessionsAreIsolated(t *testing.T) {
 	b, fake := newTestBot(t)
-	d, _ := json.Marshal(map[string]any{
-		"id":      "M1",
-		"content": "/server add acovia mc.example.com",
-		"author":  map[string]any{"user_openid": "U1"},
-	})
-	b.handleEvent(context.Background(), event{T: "C2C_MESSAGE_CREATE", D: d})
+	ctx := context.Background()
 
-	msgs := fake.messages()
-	if len(msgs) != 1 {
-		t.Fatalf("messages = %v", msgs)
+	b.handleCommand(ctx, groupTarget("G1"), "M1", "/server add group-server group.example.com")
+	b.handleCommand(ctx, userTarget("U1"), "M2", "/server add private-server private.example.com")
+
+	groupServers := sessionServers(t, b, groupTarget("G1"))
+	userServers := sessionServers(t, b, userTarget("U1"))
+	if groupServers["group-server"] != "group.example.com" {
+		t.Fatalf("group servers = %v", groupServers)
 	}
-	if !strings.Contains(msgs[0]["content"].(string), "only available in group chats") {
-		t.Fatalf("reply = %v", msgs[0]["content"])
+	if _, ok := groupServers["private-server"]; ok {
+		t.Fatalf("private server leaked into group: %v", groupServers)
 	}
-	if paths := fake.messageTargets(); len(paths) != 1 || paths[0] != "/v2/users/U1/messages" {
-		t.Fatalf("message paths = %v", paths)
+	if userServers["private-server"] != "private.example.com" {
+		t.Fatalf("user servers = %v", userServers)
 	}
-	if len(b.cfg.Servers) != 0 {
-		t.Fatalf("private /server changed config: %v", b.cfg.Servers)
+	if _, ok := userServers["group-server"]; ok {
+		t.Fatalf("group server leaked into private: %v", userServers)
+	}
+
+	for _, path := range []string{
+		filepath.Join("data", "G1", "server.json"),
+		filepath.Join("data", "U1", "server.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("missing %s: %v", path, err)
+		}
+	}
+	if len(fake.messages()) != 2 {
+		t.Fatalf("messages = %d", len(fake.messages()))
 	}
 }

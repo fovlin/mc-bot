@@ -8,6 +8,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const intentsGroupAndC2C = 1 << 25
@@ -56,7 +58,7 @@ func (g *gateway) run(ctx context.Context) error {
 		if err != nil {
 			attempt++
 			log.Printf("[gateway] connection lost (attempt %d): %v", attempt, err)
-			var closeErr *wsCloseError
+			var closeErr *websocket.CloseError
 			if errors.As(err, &closeErr) && closeErr.Code == 4004 {
 				// Invalid token: force a refresh before the next identify.
 				g.api.invalidateToken()
@@ -90,7 +92,7 @@ func (g *gateway) run(ctx context.Context) error {
 // classifyGatewayError decides whether a close code allows a resume, requires a
 // fresh identify, or means the bot cannot connect at all.
 func classifyGatewayError(err error) (fatal, reset bool) {
-	var closeErr *wsCloseError
+	var closeErr *websocket.CloseError
 	if !errors.As(err, &closeErr) {
 		return false, false
 	}
@@ -131,18 +133,18 @@ func (g *gateway) connectOnce(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	log.Printf("[gateway] connecting to %s", gatewayURL)
-	conn, err := wsDial(ctx, gatewayURL)
+	conn, err := dialWS(ctx, gatewayURL)
 	if err != nil {
 		return false, err
 	}
 	defer conn.Close()
 
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 
 	// Hello
 	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	raw, err := conn.readMessage()
+	raw, err := conn.ReadText()
 	if err != nil {
 		return false, fmt.Errorf("wait for Hello: %w", err)
 	}
@@ -176,7 +178,7 @@ func (g *gateway) connectOnce(ctx context.Context) (bool, error) {
 	ready := false
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(2*interval + 10*time.Second))
-		raw, err := conn.readMessage()
+		raw, err := conn.ReadText()
 		if err != nil {
 			return ready, err
 		}
@@ -225,7 +227,7 @@ func (g *gateway) connectOnce(ctx context.Context) (bool, error) {
 	}
 }
 
-func (g *gateway) sendAuth(_ context.Context, conn *wsConn, token string) error {
+func (g *gateway) sendAuth(_ context.Context, conn *wsClient, token string) error {
 	g.mu.Lock()
 	sessionID, seq := g.sessionID, g.seq
 	g.mu.Unlock()
@@ -257,13 +259,13 @@ func (g *gateway) sendAuth(_ context.Context, conn *wsConn, token string) error 
 	if err != nil {
 		return fmt.Errorf("marshal auth payload: %w", err)
 	}
-	if err := conn.writeFrame(wsOpText, payload); err != nil {
+	if err := conn.WriteText(payload); err != nil {
 		return fmt.Errorf("write auth payload: %w", err)
 	}
 	return nil
 }
 
-func (g *gateway) heartbeat(ctx context.Context, conn *wsConn, interval time.Duration, ack <-chan struct{}) {
+func (g *gateway) heartbeat(ctx context.Context, conn *wsClient, interval time.Duration, ack <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	lastAck := time.Now()
@@ -280,11 +282,11 @@ func (g *gateway) heartbeat(ctx context.Context, conn *wsConn, interval time.Dur
 			}
 			if time.Since(lastAck) > 2*interval {
 				log.Printf("[gateway] heartbeat timed out; reconnecting")
-				conn.Close()
+				_ = conn.Close()
 				return
 			}
-			if err := conn.writeFrame(wsOpText, g.heartbeatPayload()); err != nil {
-				conn.Close()
+			if err := conn.WriteText(g.heartbeatPayload()); err != nil {
+				_ = conn.Close()
 				return
 			}
 		}
