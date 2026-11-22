@@ -43,6 +43,7 @@ func newGateway(api *qqAPI, handle func(context.Context, event)) *gateway {
 // identifying again. Fatal authentication errors are returned.
 func (g *gateway) run(ctx context.Context) error {
 	backoff := time.Second
+	attempt := 0
 	for {
 		ready, err := g.connectOnce(ctx)
 		if ctx.Err() != nil {
@@ -50,9 +51,11 @@ func (g *gateway) run(ctx context.Context) error {
 		}
 		if ready {
 			backoff = time.Second
+			attempt = 0
 		}
 		if err != nil {
-			log.Printf("[gateway] connection lost: %v", err)
+			attempt++
+			log.Printf("[gateway] connection lost (attempt %d): %v", attempt, err)
 			var closeErr *wsCloseError
 			if errors.As(err, &closeErr) && closeErr.Code == 4004 {
 				// Invalid token: force a refresh before the next identify.
@@ -68,6 +71,7 @@ func (g *gateway) run(ctx context.Context) error {
 			if reset {
 				g.resetSession()
 			}
+			log.Printf("[gateway] reconnecting in %s", backoff)
 		}
 		select {
 		case <-ctx.Done():
@@ -302,15 +306,19 @@ func (g *gateway) dispatch(ctx context.Context, ev event) {
 	if g.handle == nil {
 		return
 	}
-	select {
-	case g.sem <- struct{}{}:
-	case <-ctx.Done():
-		return
-	}
 
 	evCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	go func() {
 		defer cancel()
+
+		// Acquire the worker slot in the goroutine, not in the read loop.
+		// Otherwise a burst of commands can block heartbeat ACKs and cause a
+		// false reconnect.
+		select {
+		case g.sem <- struct{}{}:
+		case <-evCtx.Done():
+			return
+		}
 		defer func() { <-g.sem }()
 		defer func() {
 			if r := recover(); r != nil {

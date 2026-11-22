@@ -69,6 +69,39 @@ In a group, mention the bot when sending commands; the platform strips the @ pre
 - Replies are official passive messages and are subject to the platform's time window and reply limit. The bot never sends active messages.
 - Fonts are not bundled with the repository; the system font is used by default. `golang.org/x/image` is the only direct external dependency (it pulls in `x/text` and `x/sys` indirectly).
 
+## Reconnects and systemd
+
+The gateway loop reconnects on WebSocket and network failures with exponential backoff (1s, 2s, ... 30s) and resumes the session when possible. The heartbeat/read deadline detects a silent connection loss within about two heartbeat intervals, and TCP keepalive is enabled.
+
+It exits on fatal credential or permission errors (for example 10004/10007/100016, or close codes 4013/4014/4914/4915). Run it under systemd so the process itself is restarted in that case:
+
+```ini
+[Unit]
+Description=mcbot-go
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fovlin
+WorkingDirectory=/home/fovlin/Documents/mc-bot
+ExecStart=/home/fovlin/Documents/mc-bot/mcbot-go
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mcbot-go
+journalctl -u mcbot-go -f
+```
+
+`StartLimitIntervalSec=0` prevents systemd from giving up after repeated restarts. If the process stays alive but stops responding, look for `[gateway] connection lost` and `[gateway] reconnecting in ...` in the journal; the loop is retrying. If the process is gone, the journal will show the fatal error before it exited.
+
 ## Tests
 
 ```bash

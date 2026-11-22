@@ -79,6 +79,10 @@ func wsDial(ctx context.Context, rawURL string) (*wsConn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect WebSocket: %w", err)
 	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
 	if u.Scheme == "wss" {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: host})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {

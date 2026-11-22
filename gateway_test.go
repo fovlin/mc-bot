@@ -230,3 +230,29 @@ func TestDispatchRecoversPanic(t *testing.T) {
 		t.Fatalf("semaphore not released: %d", len(g.sem))
 	}
 }
+
+func TestDispatchDoesNotBlockReadLoop(t *testing.T) {
+	g := newGateway(nil, func(context.Context, event) {})
+
+	// Simulate all workers being busy. dispatch must still return immediately;
+	// otherwise heartbeat ACKs cannot be read.
+	for i := 0; i < cap(g.sem); i++ {
+		g.sem <- struct{}{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		g.dispatch(ctx, event{T: "X"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch blocked the read loop")
+	}
+	cancel()
+	for i := 0; i < cap(g.sem); i++ {
+		<-g.sem
+	}
+}
