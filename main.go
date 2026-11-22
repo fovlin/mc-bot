@@ -11,15 +11,18 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags)
 
+	path, err := configPath()
+	if err != nil {
+		log.Fatalf("[mcbot-go] %v", err)
+	}
 	cfg, err := loadConfig()
 	if err != nil {
-		log.Fatalf("[mc-bot] %v", err)
+		log.Fatalf("[mcbot-go] %v", err)
 	}
-	path, _ := configPath()
 
 	renderer, fontPath, err := newRenderer(cfg.Font)
 	if err != nil {
-		log.Fatalf("[mc-bot] %v", err)
+		log.Fatalf("[mcbot-go] %v", err)
 	}
 
 	api := newQQAPI(cfg.AppID, cfg.ClientSecret)
@@ -28,10 +31,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("[mc-bot] starting: config=%s servers=%d font=%s", path, len(cfg.Servers), fontPath)
+	log.Printf("[mcbot-go] starting: pid=%d config=%s servers=%d font=%s", os.Getpid(), path, len(cfg.Servers), fontPath)
+	log.Printf("[mcbot-go] listening for group and private messages; send /ls")
 	gateway := newGateway(api, bot.handleEvent)
 	if err := gateway.run(ctx); err != nil {
-		log.Fatalf("[mc-bot] %v", err)
+		log.Fatalf("[mcbot-go] %v", err)
 	}
-	log.Printf("[mc-bot] stopped")
+	log.Printf("[mcbot-go] stopped")
 }

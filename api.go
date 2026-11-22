@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,11 +40,23 @@ func (f *flexInt) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// errCodeMessageDeduplicated is returned when the same msg_id + msg_seq has
+// already been answered, for example by a second running bot instance.
+const errCodeMessageDeduplicated = 40054005
+
 type apiError struct {
 	Code       int
 	Message    string
 	TraceID    string
 	HTTPStatus int
+}
+
+func isDuplicateMessageError(err error) bool {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == errCodeMessageDeduplicated
+	}
+	return false
 }
 
 func (e *apiError) Error() string {
@@ -243,25 +254,17 @@ func (a *qqAPI) gatewayURL(ctx context.Context) (string, error) {
 	return resp.URL, nil
 }
 
-func groupMessagesPath(groupOpenID string) string {
-	return "/v2/groups/" + url.PathEscape(groupOpenID) + "/messages"
-}
-
-func groupFilesPath(groupOpenID string) string {
-	return "/v2/groups/" + url.PathEscape(groupOpenID) + "/files"
-}
-
-func (a *qqAPI) sendGroupText(ctx context.Context, groupOpenID, msgID string, seq int, text string) error {
+func (a *qqAPI) sendText(ctx context.Context, target chatTarget, msgID string, seq int, text string) error {
 	payload := map[string]any{
 		"msg_type": 0,
 		"content":  text,
 		"msg_id":   msgID,
 		"msg_seq":  seq,
 	}
-	return a.request(ctx, http.MethodPost, groupMessagesPath(groupOpenID), payload, nil)
+	return a.request(ctx, http.MethodPost, target.path("/messages"), payload, nil)
 }
 
-func (a *qqAPI) uploadGroupImage(ctx context.Context, groupOpenID string, png []byte) (string, error) {
+func (a *qqAPI) uploadImage(ctx context.Context, target chatTarget, png []byte) (string, error) {
 	if len(png) == 0 {
 		return "", errors.New("image is empty")
 	}
@@ -280,7 +283,7 @@ func (a *qqAPI) uploadGroupImage(ctx context.Context, groupOpenID string, png []
 		FileInfo string `json:"file_info"`
 		TTL      int    `json:"ttl"`
 	}
-	if err := a.request(ctx, http.MethodPost, groupFilesPath(groupOpenID), payload, &resp); err != nil {
+	if err := a.request(ctx, http.MethodPost, target.path("/files"), payload, &resp); err != nil {
 		return "", err
 	}
 	if resp.FileInfo == "" {
@@ -289,12 +292,12 @@ func (a *qqAPI) uploadGroupImage(ctx context.Context, groupOpenID string, png []
 	return resp.FileInfo, nil
 }
 
-func (a *qqAPI) sendGroupMedia(ctx context.Context, groupOpenID, msgID string, seq int, fileInfo string) error {
+func (a *qqAPI) sendMedia(ctx context.Context, target chatTarget, msgID string, seq int, fileInfo string) error {
 	payload := map[string]any{
 		"msg_type": 7,
 		"media":    map[string]string{"file_info": fileInfo},
 		"msg_id":   msgID,
 		"msg_seq":  seq,
 	}
-	return a.request(ctx, http.MethodPost, groupMessagesPath(groupOpenID), payload, nil)
+	return a.request(ctx, http.MethodPost, target.path("/messages"), payload, nil)
 }

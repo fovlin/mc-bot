@@ -15,12 +15,14 @@ import (
 	"unicode/utf8"
 )
 
-type groupMessage struct {
+type incomingMessage struct {
 	ID          string `json:"id"`
 	Content     string `json:"content"`
 	GroupOpenID string `json:"group_openid"`
+	Timestamp   string `json:"timestamp"`
 	Author      struct {
 		MemberOpenID   string `json:"member_openid"`
+		UserOpenID     string `json:"user_openid"`
 		MemberNickname string `json:"member_nickname"`
 		Bot            bool   `json:"bot"`
 	} `json:"author"`
@@ -47,99 +49,118 @@ func newBot(cfg *config, api *qqAPI, renderer *renderer) *bot {
 
 func (b *bot) handleEvent(ctx context.Context, ev event) {
 	switch ev.T {
-	case "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE":
+	case "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE":
 	default:
+		log.Printf("[cmd] ignoring event %q", ev.T)
 		return
 	}
 
-	var msg groupMessage
+	var msg incomingMessage
 	if err := json.Unmarshal(ev.D, &msg); err != nil {
-		log.Printf("[cmd] parse group message: %v", err)
+		log.Printf("[cmd] parse message: %v", err)
 		return
 	}
-	if msg.ID == "" || msg.GroupOpenID == "" || msg.Author.Bot {
+
+	var target chatTarget
+	var member string
+	switch ev.T {
+	case "C2C_MESSAGE_CREATE":
+		target = userTarget(msg.Author.UserOpenID)
+		member = msg.Author.UserOpenID
+	default:
+		target = groupTarget(msg.GroupOpenID)
+		member = msg.Author.MemberOpenID
+	}
+	if msg.ID == "" || !target.valid() || msg.Author.Bot {
+		return
+	}
+
+	content := normalizeCommandText(strings.TrimSpace(msg.Content))
+	if content == "" {
 		return
 	}
 	if b.seenMessage(msg.ID) {
 		return
 	}
-
-	content := strings.TrimSpace(msg.Content)
-	if content == "" {
-		return
-	}
-	b.handleCommand(ctx, msg.GroupOpenID, msg.ID, content)
+	log.Printf("[cmd] event=%s target=%s msg=%s member=%s time=%s content=%q",
+		ev.T, target, msg.ID, member, msg.Timestamp, content)
+	b.handleCommand(ctx, target, msg.ID, content)
 }
 
-func (b *bot) handleCommand(ctx context.Context, groupOpenID, msgID, content string) {
+func (b *bot) handleCommand(ctx context.Context, target chatTarget, msgID, content string) {
 	fields := strings.Fields(content)
 	if len(fields) == 0 {
 		return
 	}
+
 	switch fields[0] {
 	case "/server":
-		b.handleServer(ctx, groupOpenID, msgID, fields[1:])
+		if target.kind != chatGroup {
+			b.replyText(ctx, target, msgID, 1, "Server management is only available in group chats.")
+			return
+		}
+		b.handleServer(ctx, target, msgID, fields[1:])
 	case "/ls":
 		if len(fields) > 2 {
-			b.replyText(ctx, groupOpenID, msgID, 1, "Usage: /ls [name]")
+			b.replyText(ctx, target, msgID, 1, "Usage: /ls [name]")
 			return
 		}
 		name := ""
 		if len(fields) == 2 {
 			name = fields[1]
 		}
-		b.handleList(ctx, groupOpenID, msgID, name)
+		b.handleList(ctx, target, msgID, name)
 	}
 }
 
-func (b *bot) handleServer(ctx context.Context, groupOpenID, msgID string, args []string) {
+func (b *bot) handleServer(ctx context.Context, target chatTarget, msgID string, args []string) {
 	const usage = "Usage:\n/server add <name> <address>\n/server del <name>"
 	if len(args) == 0 {
-		b.replyText(ctx, groupOpenID, msgID, 1, usage)
+		b.replyText(ctx, target, msgID, 1, usage)
 		return
 	}
 
 	switch args[0] {
 	case "add":
 		if len(args) != 3 {
-			b.replyText(ctx, groupOpenID, msgID, 1, "Usage: /server add <name> <address>")
+			b.replyText(ctx, target, msgID, 1, "Usage: /server add <name> <address>")
 			return
 		}
 		reply, err := b.addServer(args[1], args[2])
 		if err != nil {
 			log.Printf("[cmd] add server: %v", err)
-			b.replyText(ctx, groupOpenID, msgID, 1, "Failed to add: "+err.Error())
+			b.replyText(ctx, target, msgID, 1, "Failed to add: "+err.Error())
 			return
 		}
-		b.replyText(ctx, groupOpenID, msgID, 1, reply)
+		b.replyText(ctx, target, msgID, 1, reply)
 	case "del":
 		if len(args) != 2 {
-			b.replyText(ctx, groupOpenID, msgID, 1, "Usage: /server del <name>")
+			b.replyText(ctx, target, msgID, 1, "Usage: /server del <name>")
 			return
 		}
 		reply, err := b.delServer(args[1])
 		if err != nil {
 			log.Printf("[cmd] delete server: %v", err)
-			b.replyText(ctx, groupOpenID, msgID, 1, "Failed to delete: "+err.Error())
+			b.replyText(ctx, target, msgID, 1, "Failed to delete: "+err.Error())
 			return
 		}
-		b.replyText(ctx, groupOpenID, msgID, 1, reply)
+		b.replyText(ctx, target, msgID, 1, reply)
 	default:
-		b.replyText(ctx, groupOpenID, msgID, 1, usage)
+		b.replyText(ctx, target, msgID, 1, usage)
 	}
 }
 
-func (b *bot) handleList(ctx context.Context, groupOpenID, msgID, name string) {
+func (b *bot) handleList(ctx context.Context, target chatTarget, msgID, name string) {
 	servers := b.servers()
 	if len(servers) == 0 {
-		b.replyText(ctx, groupOpenID, msgID, 1, "No servers configured. Add one with /server add <name> <address>.")
+		b.replyText(ctx, target, msgID, 1, "No servers configured. Add one with /server add <name> <address>.")
 		return
 	}
 
 	var names []string
 	if name != "" {
 		if _, ok := servers[name]; !ok {
-			b.replyText(ctx, groupOpenID, msgID, 1,
+			b.replyText(ctx, target, msgID, 1,
 				fmt.Sprintf("Server %s not found. Available: %s", name, strings.Join(sortedServers(servers), ", ")))
 			return
 		}
@@ -152,25 +173,33 @@ func (b *bot) handleList(ctx context.Context, groupOpenID, msgID, name string) {
 	png, err := b.renderer.render(statuses, time.Now())
 	if err != nil {
 		log.Printf("[cmd] render status image: %v", err)
-		b.sendFallback(ctx, groupOpenID, msgID, statuses, 1)
+		b.sendFallback(ctx, target, msgID, statuses, 1)
 		return
 	}
 
-	fileInfo, err := b.api.uploadGroupImage(ctx, groupOpenID, png)
+	fileInfo, err := b.api.uploadImage(ctx, target, png)
 	if err != nil {
 		log.Printf("[cmd] upload status image: %v", err)
-		b.sendFallback(ctx, groupOpenID, msgID, statuses, 1)
+		b.sendFallback(ctx, target, msgID, statuses, 1)
 		return
 	}
 
-	if err := b.api.sendGroupMedia(ctx, groupOpenID, msgID, 1, fileInfo); err != nil {
+	if err := b.api.sendMedia(ctx, target, msgID, 1, fileInfo); err != nil {
+		if isDuplicateMessageError(err) {
+			// This msg_id was already answered; the image exists, so a text
+			// fallback would only add noise.
+			log.Printf("[cmd] image already sent for msg=%s; skipping fallback", msgID)
+			return
+		}
 		log.Printf("[cmd] send status image: %v", err)
-		b.sendFallback(ctx, groupOpenID, msgID, statuses, 2)
+		b.sendFallback(ctx, target, msgID, statuses, 2)
+		return
 	}
+	log.Printf("[cmd] image reply sent msg=%s target=%s", msgID, target)
 }
 
-func (b *bot) sendFallback(ctx context.Context, groupOpenID, msgID string, statuses []serverStatus, seq int) {
-	b.replyText(ctx, groupOpenID, msgID, seq, formatStatusText(statuses))
+func (b *bot) sendFallback(ctx context.Context, target chatTarget, msgID string, statuses []serverStatus, seq int) {
+	b.replyText(ctx, target, msgID, seq, formatStatusText(statuses))
 }
 
 func formatStatusText(statuses []serverStatus) string {
@@ -192,10 +221,12 @@ func formatStatusText(statuses []serverStatus) string {
 	return sb.String()
 }
 
-func (b *bot) replyText(ctx context.Context, groupOpenID, msgID string, seq int, text string) {
-	if err := b.api.sendGroupText(ctx, groupOpenID, msgID, seq, text); err != nil {
+func (b *bot) replyText(ctx context.Context, target chatTarget, msgID string, seq int, text string) {
+	if err := b.api.sendText(ctx, target, msgID, seq, text); err != nil {
 		log.Printf("[cmd] send text: %v", err)
+		return
 	}
+	log.Printf("[cmd] text reply sent msg=%s seq=%d target=%s", msgID, seq, target)
 }
 
 func (b *bot) addServer(name, addr string) (string, error) {
@@ -247,6 +278,21 @@ func (b *bot) servers() map[string]string {
 	return cloneServers(b.cfg.Servers)
 }
 
+// normalizeCommandText removes a leading @mention so full-mode group events
+// (which may keep it) match the content of an @ event.
+func normalizeCommandText(content string) string {
+	if !strings.HasPrefix(content, "@") {
+		return content
+	}
+	fields := strings.Fields(content)
+	if len(fields) < 2 {
+		return content
+	}
+	return strings.TrimSpace(strings.TrimPrefix(content, fields[0]))
+}
+
+// seenMessage implements the protocol requirement that the same msg_id may be
+// delivered more than once.
 func (b *bot) seenMessage(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

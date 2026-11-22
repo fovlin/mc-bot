@@ -1,6 +1,6 @@
-# mc-bot
+# mcbot-go
 
-A small QQ group bot written in Go. Mention the bot in a group, maintain a list of Minecraft servers with `/server`, and use `/ls` to ping them and render a single status card back into the group.
+A small QQ bot written in Go. It works in groups and private chats: maintain a list of Minecraft servers with `/server` (group only), and use `/ls` to ping them and render a single status card.
 
 - Uses only the Go standard library and `golang.org/x/image` for font rasterization. No official go-sdk, no third-party WebSocket library.
 - Talks to the official QQ bot API (WebSocket events plus HTTPS messages), so it works behind a home network without a public IP.
@@ -12,8 +12,8 @@ A small QQ group bot written in Go. Mention the bot in a group, maintain a list 
 Go 1.27 or newer:
 
 ```bash
-go build -o mc-bot .
-./mc-bot
+go build -o mcbot-go .
+./mcbot-go
 ```
 
 ## Configuration
@@ -27,7 +27,7 @@ cat > ~/.config/mcbot-go.json <<'JSON'
   "app_id": "your AppID",
   "client_secret": "your AppSecret",
   "servers": {
-    "acovia": "mc.acovia.net"
+    "acovia": "sufox.acovia.net:40613"
   }
 }
 JSON
@@ -42,14 +42,16 @@ The configuration file is not created automatically. If it is missing or the cre
 
 ## Usage
 
-Invite the bot to a QQ group and mention it when sending commands. The platform strips the @ prefix from the event content.
+In a group, mention the bot when sending commands; the platform strips the @ prefix from the event content. In a private chat, send commands directly.
 
 | Command | Description |
 | --- | --- |
-| `/server add acovia mc.acovia.net` | Add a server. Delete an existing name first. |
+| `/server add acovia sufox.acovia.net:40613` | Add a server. Delete an existing name first. |
 | `/server del acovia` | Delete a server. |
 | `/ls` | Ping every server and send the status card. |
 | `/ls acovia` | Show one server. |
+
+`/ls` works in groups and private chats. `/server add` / `/server del` is group-only, because it changes the server list shared by every chat; a private-chat reply explains this.
 
 `/server` writes the configuration file immediately and replies with text. `/ls` pings with up to 8 concurrent workers (5s per server, 20s total), renders the version, MOTD, online counts and player sample into a dark card, uploads the PNG and sends it as a rich-media message.
 
@@ -61,8 +63,9 @@ Invite the bot to a QQ group and mention it when sending commands. The platform 
 ## Notes and limits
 
 - Java Edition 1.7+ modern status protocol only; Bedrock and pre-1.6 servers are not supported.
-- Only group messages are handled by default. If the platform enables "receive all messages", ordinary group messages starting with `/` are also handled. Private chats and channels are ignored.
-- The server list is global and shared by every group; names are case-sensitive.
+- In groups, commands normally have to @ the bot, because QQ only pushes `GROUP_AT_MESSAGE_CREATE` by default. Enable "receive all messages" for the bot in the QQ Open Platform to get `GROUP_MESSAGE_CREATE` for plain messages; the bot already handles that event, so plain `/ls` then works. Without that platform setting the @ cannot be avoided in groups. Channels are ignored.
+- Private chats support `/ls` (including the image) but not `/server add|del`.
+- The server list is global and shared by every chat; names are case-sensitive.
 - Replies are official passive messages and are subject to the platform's time window and reply limit. The bot never sends active messages.
 - Fonts are not bundled with the repository; the system font is used by default. `golang.org/x/image` is the only direct external dependency (it pulls in `x/text` and `x/sys` indirectly).
 

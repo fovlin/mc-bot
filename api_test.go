@@ -49,10 +49,10 @@ func TestTokenCacheAndHeaders(t *testing.T) {
 	api := newQQAPI("app", "secret")
 	api.baseURL = srv.URL
 
-	if err := api.sendGroupText(context.Background(), "G1", "msg-1", 1, "hello"); err != nil {
+	if err := api.sendText(context.Background(), groupTarget("G1"), "msg-1", 1, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if err := api.sendGroupText(context.Background(), "G1", "msg-1", 2, "again"); err != nil {
+	if err := api.sendText(context.Background(), groupTarget("G1"), "msg-1", 2, "again"); err != nil {
 		t.Fatal(err)
 	}
 	if tokenCalls != 1 {
@@ -132,7 +132,7 @@ func TestUnauthorizedRefreshesToken(t *testing.T) {
 
 	api := newQQAPI("app", "secret")
 	api.baseURL = srv.URL
-	if err := api.sendGroupText(context.Background(), "G1", "m", 1, "x"); err != nil {
+	if err := api.sendText(context.Background(), groupTarget("G1"), "m", 1, "x"); err != nil {
 		t.Fatal(err)
 	}
 	if tokenCalls != 2 || messageCalls != 2 {
@@ -152,7 +152,7 @@ func TestAPIErrorCode(t *testing.T) {
 
 	api := newQQAPI("app", "secret")
 	api.baseURL = srv.URL
-	err := api.sendGroupText(context.Background(), "G1", "m", 1, "x")
+	err := api.sendText(context.Background(), groupTarget("G1"), "m", 1, "x")
 	var apiErr *apiError
 	if err == nil || !errors.As(err, &apiErr) {
 		t.Fatalf("expected apiError, got %v", err)
@@ -175,7 +175,7 @@ func TestHTTPErrorStatus(t *testing.T) {
 
 	api := newQQAPI("app", "secret")
 	api.baseURL = srv.URL
-	err := api.sendGroupText(context.Background(), "G1", "m", 1, "x")
+	err := api.sendText(context.Background(), groupTarget("G1"), "m", 1, "x")
 	var apiErr *apiError
 	if err == nil || !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusTooManyRequests {
 		t.Fatalf("unexpected error: %v", err)
@@ -204,7 +204,7 @@ func TestUploadAndSendMedia(t *testing.T) {
 	api := newQQAPI("app", "secret")
 	api.baseURL = srv.URL
 
-	fileInfo, err := api.uploadGroupImage(context.Background(), "G1", png)
+	fileInfo, err := api.uploadImage(context.Background(), groupTarget("G1"), png)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestUploadAndSendMedia(t *testing.T) {
 		t.Fatalf("file_data decode = %q, %v", decoded, err)
 	}
 
-	if err := api.sendGroupMedia(context.Background(), "G1", "msg-1", 1, fileInfo); err != nil {
+	if err := api.sendMedia(context.Background(), groupTarget("G1"), "msg-1", 1, fileInfo); err != nil {
 		t.Fatal(err)
 	}
 	if media["msg_type"].(float64) != 7 || media["msg_id"] != "msg-1" || media["msg_seq"].(float64) != 1 {
@@ -273,5 +273,59 @@ func TestGatewayURLFallback(t *testing.T) {
 	}
 	if got != defaultGatewayURL {
 		t.Fatalf("gateway = %q, want fallback", got)
+	}
+}
+
+func TestIsDuplicateMessageError(t *testing.T) {
+	if !isDuplicateMessageError(&apiError{Code: errCodeMessageDeduplicated}) {
+		t.Fatal("deduplicated error should be recognized")
+	}
+	if isDuplicateMessageError(&apiError{Code: 40034005}) {
+		t.Fatal("unrelated error must not be treated as duplicate")
+	}
+	if isDuplicateMessageError(errors.New("network")) {
+		t.Fatal("plain error must not be treated as duplicate")
+	}
+}
+
+func TestUserChatPaths(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/getAppAccessToken" {
+			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":7200}`))
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/files") {
+			_, _ = w.Write([]byte(`{"file_info":"FI","ttl":300}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"mid"}`))
+	}))
+	defer srv.Close()
+
+	api := newQQAPI("app", "secret")
+	api.baseURL = srv.URL
+	ctx := context.Background()
+
+	fileInfo, err := api.uploadImage(ctx, userTarget("U1"), []byte("png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := api.sendMedia(ctx, userTarget("U1"), "M1", 1, fileInfo); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.sendText(ctx, userTarget("U1"), "M2", 1, "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"/v2/users/U1/files", "/v2/users/U1/messages", "/v2/users/U1/messages"}
+	if len(paths) != len(want) {
+		t.Fatalf("paths = %v", paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("paths = %v, want %v", paths, want)
+		}
 	}
 }

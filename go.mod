@@ -1,4 +1,4 @@
-module acovia.net/mc-bot
+module acovia.net/mcbot-go
 
 go 1.27.4
 

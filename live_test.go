@@ -15,9 +15,9 @@ func TestLiveStatus(t *testing.T) {
 		t.Skip("set MCBOT_LIVE=1 to run the live server test")
 	}
 
-	st := pingJava(context.Background(), "mc.acovia.net", 8*time.Second)
+	st := pingJava(context.Background(), "sufox.acovia.net:40613", 8*time.Second)
 	if !st.Online {
-		t.Fatalf("mc.acovia.net is offline: %s", st.Err)
+		t.Fatalf("sufox.acovia.net:40613 is offline: %s", st.Err)
 	}
 	if st.Version == "" || st.Version == "unknown" {
 		t.Fatalf("version is empty: %+v", st)

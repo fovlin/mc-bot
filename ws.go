@@ -106,7 +106,7 @@ func wsDial(ctx context.Context, rawURL string) (*wsConn, error) {
 		path = "/"
 	}
 	request := fmt.Sprintf(
-		"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: mc-bot\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: mcbot-go\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
 		path, u.Host, key,
 	)
 	if _, err := io.WriteString(conn, request); err != nil {

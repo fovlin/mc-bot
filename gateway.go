@@ -126,6 +126,7 @@ func (g *gateway) connectOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	log.Printf("[gateway] connecting to %s", gatewayURL)
 	conn, err := wsDial(ctx, gatewayURL)
 	if err != nil {
 		return false, err
@@ -189,11 +190,15 @@ func (g *gateway) connectOnce(ctx context.Context) (bool, error) {
 			case "READY":
 				var data struct {
 					SessionID string `json:"session_id"`
+					User      struct {
+						ID       string `json:"id"`
+						Username string `json:"username"`
+					} `json:"user"`
 				}
 				_ = json.Unmarshal(ev.D, &data)
 				g.setSessionID(data.SessionID)
 				ready = true
-				log.Printf("[gateway] ready, session=%s", data.SessionID)
+				log.Printf("[gateway] ready, bot=%s id=%s session=%s", data.User.Username, data.User.ID, data.SessionID)
 			case "RESUMED":
 				ready = true
 				log.Printf("[gateway] session resumed")
@@ -238,8 +243,8 @@ func (g *gateway) sendAuth(_ context.Context, conn *wsConn, token string) error 
 			"shard":   []int{0, 1},
 			"properties": map[string]string{
 				"$os":      "linux",
-				"$browser": "mc-bot",
-				"$device":  "mc-bot",
+				"$browser": "mcbot-go",
+				"$device":  "mcbot-go",
 			},
 		}
 	}

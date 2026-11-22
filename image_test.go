@@ -186,3 +186,14 @@ func TestWrapText(t *testing.T) {
 		t.Fatalf("expected CJK wrapping, got %d lines", len(cjk))
 	}
 }
+
+func TestTextVerticalBounds(t *testing.T) {
+	r := testRenderer(t)
+	top, bottom, ok := textVerticalBounds(r.title, "acovia")
+	if !ok || top >= 0 || bottom < 0 {
+		t.Fatalf("bounds = %d..%d ok=%v", top, bottom, ok)
+	}
+	if _, _, ok := textVerticalBounds(r.title, ""); ok {
+		t.Fatal("empty text should have no glyph bounds")
+	}
+}

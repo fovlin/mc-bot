@@ -352,10 +352,25 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 	right := x1 - cardPad
 	cy := y + cardPad
 
-	// Small accent marker next to the server name.
-	fillRect(img, image.Rect(left, cy+6, left+3, cy+32), colAccent)
+	titleAscent := r.title.Metrics().Ascent.Ceil()
+	titleDescent := r.title.Metrics().Descent.Ceil()
+	titleBaseline := cy + titleAscent
+
+	// The marker should bracket the actual glyphs of the name, not the font's
+	// full ascent/descent box. Otherwise short names look top-heavy.
+	markerTop := titleBaseline - (titleAscent - titleDescent)
+	markerBottom := titleBaseline
+	if top, bottom, ok := textVerticalBounds(r.title, c.name); ok {
+		markerTop = titleBaseline + top
+		markerBottom = titleBaseline + bottom
+	}
+	if markerBottom-markerTop < 8 {
+		markerTop = titleBaseline - (titleAscent - titleDescent)
+		markerBottom = titleBaseline
+	}
+	fillRect(img, image.Rect(left, markerTop, left+3, markerBottom), colAccent)
+
 	titleX := left + 16
-	titleBaseline := cy + r.title.Metrics().Ascent.Ceil()
 	r.drawString(img, r.title, colTitle, titleX, titleBaseline, c.name)
 
 	statusWidth := measure(r.small, c.statusText)
@@ -389,7 +404,7 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 		}
 		cy += sectionGap
 
-		r.drawLabel(img, left, cy, "ONLINE PLAYERS")
+		r.drawLabel(img, left, cy, "PLAYER SAMPLE")
 		cy += labelLineHeight + labelGap
 		colWidth := (right - left) / playerColumns
 		ascent := r.body.Metrics().Ascent.Ceil()
@@ -417,7 +432,7 @@ func (r *renderer) drawNoteCard(img *image.RGBA, y int, text string) {
 }
 
 func (r *renderer) drawFooter(img *image.RGBA, y int, now time.Time) {
-	footer := fmt.Sprintf("mc-bot · %s", now.Format("2006-01-02 15:04:05"))
+	footer := fmt.Sprintf("mcbot-go · %s", now.Format("2006-01-02 15:04:05"))
 	r.drawString(img, r.small, colFaint, imgMargin, y+r.small.Metrics().Ascent.Ceil(), footer)
 }
 
@@ -505,6 +520,27 @@ func fillCircle(img *image.RGBA, cx, cy, radius int, c color.RGBA) {
 			}
 		}
 	}
+}
+
+// textVerticalBounds returns the glyph extents relative to the baseline:
+// top is usually negative, bottom is usually zero or positive.
+func textVerticalBounds(face font.Face, text string) (top, bottom int, ok bool) {
+	for _, r := range text {
+		bounds, _, hasGlyph := face.GlyphBounds(r)
+		if !hasGlyph {
+			continue
+		}
+		glyphTop := bounds.Min.Y.Floor()
+		glyphBottom := bounds.Max.Y.Ceil()
+		if !ok || glyphTop < top {
+			top = glyphTop
+		}
+		if !ok || glyphBottom > bottom {
+			bottom = glyphBottom
+		}
+		ok = true
+	}
+	return top, bottom, ok
 }
 
 func measure(face font.Face, s string) int {
