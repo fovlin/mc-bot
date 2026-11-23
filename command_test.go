@@ -37,14 +37,13 @@ func newHTTPTestServer(t *testing.T, handle func(path string, body map[string]an
 
 type fakeQQAPI struct {
 	mu               sync.Mutex
-	filesFail        bool
+	uploadFailures   int
 	duplicateFailure bool
 	messageFailures  int
 	uploadBodies     []map[string]any
 	messageBodies    []map[string]any
 	uploadPaths      []string
 	messagePaths     []string
-	unexpectedPaths  []string
 }
 
 func newFakeQQAPI(t *testing.T) (*fakeQQAPI, *httptestServer) {
@@ -58,7 +57,10 @@ func newFakeQQAPI(t *testing.T) (*fakeQQAPI, *httptestServer) {
 			fake.mu.Lock()
 			fake.uploadBodies = append(fake.uploadBodies, body)
 			fake.uploadPaths = append(fake.uploadPaths, path)
-			fail := fake.filesFail
+			fail := fake.uploadFailures > 0
+			if fail {
+				fake.uploadFailures--
+			}
 			fake.mu.Unlock()
 			if fail {
 				return map[string]any{"err_code": 850031, "message": "too large"}
@@ -82,9 +84,6 @@ func newFakeQQAPI(t *testing.T) (*fakeQQAPI, *httptestServer) {
 			}
 			return map[string]any{"id": "mid"}
 		default:
-			fake.mu.Lock()
-			fake.unexpectedPaths = append(fake.unexpectedPaths, path)
-			fake.mu.Unlock()
 			return map[string]any{"err_code": 404, "message": "not found"}
 		}
 	})
@@ -270,6 +269,59 @@ func TestListSendsImage(t *testing.T) {
 	}
 }
 
+func TestListSendsOneImagePerServer(t *testing.T) {
+	b, fake := newTestBot(t)
+	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":1,"max":2,"sample":[{"name":"a"}]},"description":"x"}`)
+	setSessionServers(t, b, groupTarget("G1"), map[string]string{"alpha": addr, "beta": addr, "gamma": addr})
+
+	b.handleCommand(context.Background(), groupTarget("G1"), "M1", "/ls")
+
+	msgs := fake.messages()
+	uploads := fake.uploads()
+	if len(msgs) != 3 || len(uploads) != 3 {
+		t.Fatalf("messages = %d, uploads = %d, want 3 each", len(msgs), len(uploads))
+	}
+	seen := make(map[string]bool, len(uploads))
+	for i, msg := range msgs {
+		if msg["msg_type"].(float64) != 7 || msg["msg_id"] != "M1" || msg["msg_seq"].(float64) != float64(i+1) {
+			t.Fatalf("message %d = %v", i, msg)
+		}
+	}
+	for _, upload := range uploads {
+		data, _ := upload["file_data"].(string)
+		if data == "" || seen[data] {
+			t.Fatalf("servers did not produce distinct images")
+		}
+		seen[data] = true
+	}
+}
+
+func TestListPartialImageFallback(t *testing.T) {
+	b, fake := newTestBot(t)
+	fake.mu.Lock()
+	fake.uploadFailures = 1 // alpha's image fails; beta's is still sent
+	fake.mu.Unlock()
+	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":1,"max":2,"sample":[{"name":"a"}]},"description":"x"}`)
+	setSessionServers(t, b, groupTarget("G1"), map[string]string{"alpha": addr, "beta": addr})
+
+	b.handleCommand(context.Background(), groupTarget("G1"), "M1", "/ls")
+
+	msgs := fake.messages()
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %v", msgs)
+	}
+	if msgs[0]["msg_type"].(float64) != 7 || msgs[0]["msg_seq"].(float64) != 2 {
+		t.Fatalf("beta image = %v", msgs[0])
+	}
+	if msgs[1]["msg_type"].(float64) != 0 || msgs[1]["msg_seq"].(float64) != 3 {
+		t.Fatalf("alpha fallback = %v", msgs[1])
+	}
+	content := msgs[1]["content"].(string)
+	if !strings.Contains(content, "image could not be sent") || !strings.Contains(content, "alpha") || strings.Contains(content, "beta") {
+		t.Fatalf("fallback content = %q", content)
+	}
+}
+
 func TestListNamedAndUnknown(t *testing.T) {
 	b, fake := newTestBot(t)
 	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":0,"max":1},"description":"x"}`)
@@ -300,10 +352,10 @@ func TestListNoServers(t *testing.T) {
 	}
 }
 
-func TestListUploadFallback(t *testing.T) {
+func TestListUploadFallbackUsesNextSeq(t *testing.T) {
 	b, fake := newTestBot(t)
 	fake.mu.Lock()
-	fake.filesFail = true
+	fake.uploadFailures = 1
 	fake.mu.Unlock()
 	addr := startStatusServer(t, `{"version":{"name":"v","protocol":1},"players":{"online":1,"max":2,"sample":[{"name":"a"}]},"description":"x"}`)
 	setSessionServers(t, b, groupTarget("G1"), map[string]string{"acovia": addr})
@@ -314,7 +366,7 @@ func TestListUploadFallback(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("messages = %v", msgs)
 	}
-	if msgs[0]["msg_type"].(float64) != 0 || msgs[0]["msg_seq"].(float64) != 1 {
+	if msgs[0]["msg_type"].(float64) != 0 || msgs[0]["msg_seq"].(float64) != 2 {
 		t.Fatalf("fallback message = %v", msgs[0])
 	}
 	content := msgs[0]["content"].(string)

@@ -21,10 +21,9 @@ type incomingMessage struct {
 	GroupOpenID string `json:"group_openid"`
 	Timestamp   string `json:"timestamp"`
 	Author      struct {
-		MemberOpenID   string `json:"member_openid"`
-		UserOpenID     string `json:"user_openid"`
-		MemberNickname string `json:"member_nickname"`
-		Bot            bool   `json:"bot"`
+		MemberOpenID string `json:"member_openid"`
+		UserOpenID   string `json:"user_openid"`
+		Bot          bool   `json:"bot"`
 	} `json:"author"`
 }
 
@@ -172,36 +171,46 @@ func (b *bot) handleList(ctx context.Context, target chatTarget, msgID, name str
 	}
 
 	statuses := pingAll(ctx, names, servers)
-	png, err := b.renderer.render(statuses, time.Now())
-	if err != nil {
-		log.Printf("[cmd] render status image: %v", err)
-		b.sendFallback(ctx, target, msgID, statuses, 1)
-		return
-	}
-
-	fileInfo, err := b.api.uploadImage(ctx, target, png)
-	if err != nil {
-		log.Printf("[cmd] upload status image: %v", err)
-		b.sendFallback(ctx, target, msgID, statuses, 1)
-		return
-	}
-
-	if err := b.api.sendMedia(ctx, target, msgID, 1, fileInfo); err != nil {
-		if isDuplicateMessageError(err) {
-			// This msg_id was already answered; the image exists, so a text
-			// fallback would only add noise.
-			log.Printf("[cmd] image already sent for msg=%s; skipping fallback", msgID)
-			return
-		}
-		log.Printf("[cmd] send status image: %v", err)
-		b.sendFallback(ctx, target, msgID, statuses, 2)
-		return
-	}
-	log.Printf("[cmd] image reply sent msg=%s target=%s", msgID, target)
+	b.sendStatusImages(ctx, target, msgID, statuses)
 }
 
-func (b *bot) sendFallback(ctx context.Context, target chatTarget, msgID string, statuses []serverStatus, seq int) {
-	b.replyText(ctx, target, msgID, seq, formatStatusText(statuses))
+// sendStatusImages answers with one image per server, so each card is a
+// separate message and its height only depends on that server. Servers whose
+// image could not be sent are summarized in one trailing text reply.
+func (b *bot) sendStatusImages(ctx context.Context, target chatTarget, msgID string, statuses []serverStatus) {
+	now := time.Now()
+	var failed []serverStatus
+	for i, status := range statuses {
+		seq := i + 1
+		err := b.sendStatusImage(ctx, target, msgID, seq, status, now)
+		switch {
+		case err == nil:
+			log.Printf("[cmd] image reply sent msg=%s seq=%d target=%s server=%s", msgID, seq, target, status.Name)
+		case isDuplicateMessageError(err):
+			// This msg_seq was already answered, for example by another bot
+			// instance; the image exists, so a text fallback would be noise.
+			log.Printf("[cmd] image already sent msg=%s seq=%d; skipping fallback", msgID, seq)
+		default:
+			log.Printf("[cmd] send image for %s: %v", status.Name, err)
+			failed = append(failed, status)
+		}
+	}
+	if len(failed) == 0 {
+		return
+	}
+	b.replyText(ctx, target, msgID, len(statuses)+1, formatStatusText(failed))
+}
+
+func (b *bot) sendStatusImage(ctx context.Context, target chatTarget, msgID string, seq int, status serverStatus, now time.Time) error {
+	png, err := b.renderer.render(status, now)
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	fileInfo, err := b.api.uploadImage(ctx, target, png)
+	if err != nil {
+		return fmt.Errorf("upload: %w", err)
+	}
+	return b.api.sendMedia(ctx, target, msgID, seq, fileInfo)
 }
 
 func formatStatusText(statuses []serverStatus) string {

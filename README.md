@@ -1,6 +1,6 @@
 # mcbot-go
 
-A small QQ bot written in Go. It works in groups and private chats. Every chat (one group or one private conversation) is an independent session with its own Minecraft server list: `/server` manages that session's list, and `/ls` pings it and renders one status card.
+A small QQ bot written in Go. It works in groups and private chats. Every chat (one group or one private conversation) is an independent session with its own Minecraft server list: `/server` manages that session's list, and `/ls` pings it and sends one status card per server.
 
 - Standard library plus `github.com/gorilla/websocket`, `golang.org/x/image` (font rasterization) and `golang.org/x/term` (hidden secret input). No QQ SDK.
 - Talks to the official QQ bot API (WebSocket events plus HTTPS messages), so it works behind a home network without a public IP.
@@ -89,16 +89,16 @@ In a group, mention the bot when sending commands; the platform strips the @ pre
 | --- | --- |
 | `/server add acovia sufox.acovia.net:40613` | Add a server to this session. Delete an existing name first. |
 | `/server del acovia` | Delete a server from this session. |
-| `/ls` | Ping every server in this session and send the status card. |
+| `/ls` | Ping every server in this session, one status card per server. |
 | `/ls acovia` | Show one server from this session. |
 
 Addresses may be `mc.example.com`, `mc.example.com:25566`, or IPv6. Without a port, the bot looks up the `_minecraft._tcp` SRV record first and falls back to port 25565.
 
-`/ls` pings with up to 8 concurrent workers (5s per server, 20s total), renders the version, MOTD, online counts and player sample into a dark card, uploads the PNG and sends it as a rich-media message. Group replies use `/v2/groups/{openid}/...`; private replies use `/v2/users/{openid}/...`.
+`/ls` pings with up to 8 concurrent workers (5s per server, 20s total), renders the version, MOTD, online counts and player sample into a dark card, and sends one image per server as a separate rich-media message. Group replies use `/v2/groups/{openid}/...`; private replies use `/v2/users/{openid}/...`.
 
-- Long player lists make the card taller. A single image is capped at 12000px; beyond that the remaining servers are summarized and `/ls <name>` can be used to inspect one.
+- Long player lists make a card taller, up to 40 rows per card; long MOTDs are capped at 6 lines.
 - A dead server, failed SRV lookup or timeout does not affect the other cards; the card shows a red `OFFLINE` state and the reason.
-- If rendering or uploading the image fails, the bot falls back to a text summary using the same `msg_id` and the next `msg_seq`.
+- If rendering or uploading one server's image fails, the other images are still sent and the affected servers are summarized in a trailing text reply using the next `msg_seq`.
 - All bot replies, image labels and log messages are in English.
 
 ## Notes and limits

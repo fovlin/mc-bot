@@ -43,9 +43,9 @@ func onlineStatus(name string, players int) serverStatus {
 	return st
 }
 
-func renderAndDecode(t *testing.T, r *renderer, list []serverStatus) [2]int {
+func renderAndDecode(t *testing.T, r *renderer, st serverStatus) [2]int {
 	t.Helper()
-	data, err := r.render(list, time.Date(2026, 11, 22, 18, 0, 0, 0, time.Local))
+	data, err := r.render(st, time.Date(2026, 11, 22, 18, 0, 0, 0, time.Local))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,52 +65,44 @@ func renderAndDecode(t *testing.T, r *renderer, list []serverStatus) [2]int {
 
 func TestRenderBasic(t *testing.T) {
 	r := testRenderer(t)
+	onlineSize := renderAndDecode(t, r, onlineStatus("acovia", 5))
 	offline := serverStatus{Name: "offline", Address: "offline.example.com", Err: "connection timed out"}
-	size := renderAndDecode(t, r, []serverStatus{onlineStatus("acovia", 5), offline})
-	if size[1] < 200 {
-		t.Fatalf("height = %d, expected both cards", size[1])
+	offlineSize := renderAndDecode(t, r, offline)
+	if onlineSize[1] < 200 || offlineSize[1] < 200 {
+		t.Fatalf("heights = %v, %v", onlineSize, offlineSize)
 	}
 }
 
 func TestRenderHeightGrowsWithPlayers(t *testing.T) {
 	r := testRenderer(t)
-	short := renderAndDecode(t, r, []serverStatus{onlineStatus("a", 4)})
-	long := renderAndDecode(t, r, []serverStatus{onlineStatus("a", 45)})
+	short := renderAndDecode(t, r, onlineStatus("a", 4))
+	long := renderAndDecode(t, r, onlineStatus("a", 45))
 	if long[1] <= short[1] {
 		t.Fatalf("height did not grow: %d -> %d", short[1], long[1])
 	}
-}
-
-func TestRenderEmptyList(t *testing.T) {
-	r := testRenderer(t)
-	renderAndDecode(t, r, nil)
 }
 
 func TestRenderLongMOTD(t *testing.T) {
 	r := testRenderer(t)
 	st := onlineStatus("long", 3)
 	st.MOTD = strings.Repeat("long server description ", 500)
-	size := renderAndDecode(t, r, []serverStatus{st})
-	if size[1] > maxImgHeight {
-		t.Fatalf("height = %d exceeds cap", size[1])
+	renderAndDecode(t, r, st)
+	if lines := len(r.layoutCard(st).motd); lines > maxMOTDLines {
+		t.Fatalf("motd lines = %d, want <= %d", lines, maxMOTDLines)
 	}
 }
 
 func TestRenderOfflineLongError(t *testing.T) {
 	r := testRenderer(t)
 	st := serverStatus{Name: "broken", Address: "broken.example.com", Err: strings.Repeat("error ", 200)}
-	renderAndDecode(t, r, []serverStatus{st})
+	renderAndDecode(t, r, st)
 }
 
-func TestRenderManyServersCapped(t *testing.T) {
+func TestRenderPlayerListCapped(t *testing.T) {
 	r := testRenderer(t)
-	var list []serverStatus
-	for i := 0; i < 100; i++ {
-		list = append(list, onlineStatus("srv", 2))
-	}
-	size := renderAndDecode(t, r, list)
-	if size[1] > maxImgHeight {
-		t.Fatalf("height = %d exceeds cap %d", size[1], maxImgHeight)
+	c := r.layoutCard(onlineStatus("many", 200))
+	if got, max := len(c.playerNames), maxPlayerRows*playerColumns; got > max {
+		t.Fatalf("player names = %d, want <= %d", got, max)
 	}
 }
 
@@ -119,7 +111,7 @@ func TestRenderNoSample(t *testing.T) {
 	st := onlineStatus("empty", 0)
 	st.OnlinePlayers = 7
 	st.Sample = nil
-	renderAndDecode(t, r, []serverStatus{st})
+	renderAndDecode(t, r, st)
 }
 
 func TestRenderChineseWithSystemFont(t *testing.T) {
@@ -130,7 +122,7 @@ func TestRenderChineseWithSystemFont(t *testing.T) {
 	t.Logf("font = %s", path)
 	st := onlineStatus("中文服务器", 3)
 	st.MOTD = "欢迎来到 §a中文 §r服务器\n第二行"
-	renderAndDecode(t, r, []serverStatus{st})
+	renderAndDecode(t, r, st)
 }
 
 func TestDisplayAddress(t *testing.T) {

@@ -37,12 +37,10 @@ const (
 	dividerGap      = 20
 	playerRowHeight = 36
 	smallLineHeight = 26
-	maxImgHeight    = 12000
 	playerColumns   = 3
 	maxMOTDLines    = 6
 	maxErrorLines   = 3
 	maxPlayerRows   = 40
-	noteHeight      = cardPad*2 + bodyLineHeight
 )
 
 // Palette adapted from docs-go's dark theme (theme/style.css).
@@ -163,7 +161,7 @@ func newRendererFromFont(f *opentype.Font) (*renderer, error) {
 }
 
 type serverCard struct {
-	status      serverStatus
+	online      bool
 	name        string
 	address     string
 	statusText  string
@@ -207,7 +205,7 @@ func (r *renderer) layoutCard(s serverStatus) serverCard {
 	}
 
 	c := serverCard{
-		status:      s,
+		online:      s.Online,
 		statusText:  statusText,
 		statusColor: statusColor,
 	}
@@ -226,12 +224,7 @@ func (r *renderer) layoutCard(s serverStatus) serverCard {
 		if motd == "" {
 			motd = "No MOTD"
 		}
-		c.motd = wrapText(r.body, motd, inner)
-		if len(c.motd) > maxMOTDLines {
-			c.motd = c.motd[:maxMOTDLines]
-			last := c.motd[maxMOTDLines-1] + "…"
-			c.motd[maxMOTDLines-1] = truncate(r.body, last, inner)
-		}
+		c.motd = clipLines(r.body, wrapText(r.body, motd, inner), maxMOTDLines, inner)
 
 		if len(s.Sample) == 0 {
 			if s.OnlinePlayers > 0 {
@@ -239,26 +232,23 @@ func (r *renderer) layoutCard(s serverStatus) serverCard {
 			} else {
 				c.playerNames = []string{"No players online"}
 			}
-			c.playerRows = 1
 		} else {
-			colWidth := inner/playerColumns - 16
 			sample := s.Sample
 			maxPlayers := maxPlayerRows * playerColumns
-			if len(sample) > maxPlayers {
+			truncated := len(sample) > maxPlayers
+			if truncated {
 				sample = sample[:maxPlayers-1]
-				c.playerNames = make([]string, 0, maxPlayers)
-				for _, name := range sample {
-					c.playerNames = append(c.playerNames, truncate(r.body, name, colWidth))
-				}
-				c.playerNames = append(c.playerNames, "…")
-			} else {
-				c.playerNames = make([]string, 0, len(sample))
-				for _, name := range sample {
-					c.playerNames = append(c.playerNames, truncate(r.body, name, colWidth))
-				}
 			}
-			c.playerRows = (len(c.playerNames) + playerColumns - 1) / playerColumns
+			colWidth := inner/playerColumns - 16
+			c.playerNames = make([]string, 0, maxPlayers)
+			for _, name := range sample {
+				c.playerNames = append(c.playerNames, truncate(r.body, name, colWidth))
+			}
+			if truncated {
+				c.playerNames = append(c.playerNames, "…")
+			}
 		}
+		c.playerRows = (len(c.playerNames) + playerColumns - 1) / playerColumns
 
 		height += labelLineHeight + bodyLineHeight + metaGap
 		height += labelLineHeight + bodyLineHeight + sectionGap
@@ -269,12 +259,7 @@ func (r *renderer) layoutCard(s serverStatus) serverCard {
 		if reason == "" {
 			reason = "Unknown error"
 		}
-		c.errLines = wrapText(r.body, reason, inner)
-		if len(c.errLines) > maxErrorLines {
-			c.errLines = c.errLines[:maxErrorLines]
-			last := c.errLines[maxErrorLines-1] + "…"
-			c.errLines[maxErrorLines-1] = truncate(r.body, last, inner)
-		}
+		c.errLines = clipLines(r.body, wrapText(r.body, reason, inner), maxErrorLines, inner)
 		height += labelLineHeight + labelGap + len(c.errLines)*bodyLineHeight
 	}
 
@@ -282,62 +267,20 @@ func (r *renderer) layoutCard(s serverStatus) serverCard {
 	return c
 }
 
-// render lays out and draws all server cards. Player lists are allowed to grow
-// the image; a global height cap keeps a pathologically long list usable.
-func (r *renderer) render(list []serverStatus, now time.Time) ([]byte, error) {
+// render draws one server as its own image. Every server is sent separately,
+// so a card never has to share space with another one and its height depends
+// only on that server's own content.
+func (r *renderer) render(s serverStatus, now time.Time) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if len(list) == 0 {
-		return r.renderMessage("No servers configured. Add one with /server add <name> <address>.", now)
-	}
-
-	// Reserve room for the footer and the truncation note.
-	budget := maxImgHeight - smallLineHeight - imgMargin - noteHeight - cardGap
-	y := imgMargin
-	var cards []serverCard
-	truncated := 0
-	for _, status := range list {
-		c := r.layoutCard(status)
-		if y+c.height+cardGap > budget {
-			truncated = len(list) - len(cards)
-			break
-		}
-		cards = append(cards, c)
-		y += c.height + cardGap
-	}
-	if truncated > 0 {
-		y += noteHeight + cardGap
-	}
-	total := y + smallLineHeight + imgMargin
-	if total > maxImgHeight {
-		total = maxImgHeight
-	}
-
-	img := image.NewRGBA(image.Rect(0, 0, imgWidth, total))
-	fillRect(img, img.Bounds(), colBackground)
-
-	y = imgMargin
-	for _, c := range cards {
-		r.drawCard(img, c, y)
-		y += c.height + cardGap
-	}
-	if truncated > 0 {
-		note := fmt.Sprintf("%d more server(s) not shown. Use /ls <name> to view one.", truncated)
-		r.drawNoteCard(img, y, truncate(r.body, note, r.innerWidth()))
-		y += noteHeight + cardGap
-	}
-
-	r.drawFooter(img, y, now)
-	return encodePNG(img)
-}
-
-func (r *renderer) renderMessage(text string, now time.Time) ([]byte, error) {
-	footerY := imgMargin + noteHeight + cardGap
+	c := r.layoutCard(s)
+	footerY := imgMargin + c.height + cardGap
 	total := footerY + smallLineHeight + imgMargin
+
 	img := image.NewRGBA(image.Rect(0, 0, imgWidth, total))
 	fillRect(img, img.Bounds(), colBackground)
-	r.drawNoteCard(img, imgMargin, truncate(r.body, text, r.innerWidth()))
+	r.drawCard(img, c, imgMargin)
 	r.drawFooter(img, footerY, now)
 	return encodePNG(img)
 }
@@ -351,6 +294,7 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 	left := x0 + cardPad
 	right := x1 - cardPad
 	cy := y + cardPad
+	bodyAscent := r.body.Metrics().Ascent.Ceil()
 
 	titleAscent := r.title.Metrics().Ascent.Ceil()
 	titleDescent := r.title.Metrics().Descent.Ceil()
@@ -358,15 +302,14 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 
 	// The marker should bracket the actual glyphs of the name, not the font's
 	// full ascent/descent box. Otherwise short names look top-heavy.
-	markerTop := titleBaseline - (titleAscent - titleDescent)
-	markerBottom := titleBaseline
+	defaultMarkerTop := titleBaseline - (titleAscent - titleDescent)
+	markerTop, markerBottom := defaultMarkerTop, titleBaseline
 	if top, bottom, ok := textVerticalBounds(r.title, c.name); ok {
 		markerTop = titleBaseline + top
 		markerBottom = titleBaseline + bottom
 	}
 	if markerBottom-markerTop < 8 {
-		markerTop = titleBaseline - (titleAscent - titleDescent)
-		markerBottom = titleBaseline
+		markerTop, markerBottom = defaultMarkerTop, titleBaseline
 	}
 	fillRect(img, image.Rect(left, markerTop, left+4, markerBottom), colAccent)
 
@@ -379,14 +322,14 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 	r.drawString(img, r.small, c.statusColor, statusX, titleBaseline, c.statusText)
 	cy += titleLineHeight
 
-	r.drawString(img, r.body, colMuted, left, cy+r.body.Metrics().Ascent.Ceil(), c.address)
+	r.drawString(img, r.body, colMuted, left, cy+bodyAscent, c.address)
 	cy += bodyLineHeight
 
 	cy += dividerGap
 	fillRect(img, image.Rect(left, cy, right, cy+1), colBorder)
 	cy += 1 + dividerGap
 
-	if c.status.Online {
+	if c.online {
 		half := (right - left) / 2
 		r.drawLabelValue(img, left, cy, "VERSION", c.version)
 		r.drawLabelValue(img, left+half, cy, "PROTOCOL", c.protocol)
@@ -399,7 +342,7 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 		r.drawLabel(img, left, cy, "MOTD")
 		cy += labelLineHeight + labelGap
 		for _, line := range c.motd {
-			r.drawString(img, r.body, colText, left, cy+r.body.Metrics().Ascent.Ceil(), line)
+			r.drawString(img, r.body, colText, left, cy+bodyAscent, line)
 			cy += bodyLineHeight
 		}
 		cy += sectionGap
@@ -407,28 +350,19 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 		r.drawLabel(img, left, cy, "PLAYER SAMPLE")
 		cy += labelLineHeight + labelGap
 		colWidth := (right - left) / playerColumns
-		ascent := r.body.Metrics().Ascent.Ceil()
 		for i, name := range c.playerNames {
 			column := i % playerColumns
 			row := i / playerColumns
-			r.drawString(img, r.body, colText, left+column*colWidth, cy+row*playerRowHeight+ascent, name)
+			r.drawString(img, r.body, colText, left+column*colWidth, cy+row*playerRowHeight+bodyAscent, name)
 		}
 	} else {
 		r.drawLabel(img, left, cy, "ERROR")
 		cy += labelLineHeight + labelGap
 		for _, line := range c.errLines {
-			r.drawString(img, r.body, colRed, left, cy+r.body.Metrics().Ascent.Ceil(), line)
+			r.drawString(img, r.body, colRed, left, cy+bodyAscent, line)
 			cy += bodyLineHeight
 		}
 	}
-}
-
-func (r *renderer) drawNoteCard(img *image.RGBA, y int, text string) {
-	x0, x1 := imgMargin, imgWidth-imgMargin
-	outer := image.Rect(x0, y, x1, y+noteHeight)
-	fillRoundedRect(img, outer, cardRadius, colBorder)
-	fillRoundedRect(img, outer.Inset(1), cardRadius-1, colCard)
-	r.drawString(img, r.body, colMuted, x0+cardPad, y+cardPad+r.body.Metrics().Ascent.Ceil(), text)
 }
 
 func (r *renderer) drawFooter(img *image.RGBA, y int, now time.Time) {
@@ -564,6 +498,17 @@ func truncate(face font.Face, s string, maxWidth int) string {
 		}
 	}
 	return ellipsis
+}
+
+// clipLines keeps at most max lines and marks the last kept line, so a long
+// MOTD or error message cannot make a card grow without bound.
+func clipLines(face font.Face, lines []string, max, width int) []string {
+	if len(lines) <= max {
+		return lines
+	}
+	lines = lines[:max]
+	lines[max-1] = truncate(face, lines[max-1]+"…", width)
+	return lines
 }
 
 // wrapText greedily wraps text to maxWidth, preferring a space boundary when
