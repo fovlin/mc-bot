@@ -26,8 +26,7 @@ const (
 
 type javaStatus struct {
 	Version struct {
-		Name     string `json:"name"`
-		Protocol int    `json:"protocol"`
+		Name string `json:"name"`
 	} `json:"version"`
 	Players struct {
 		Online int `json:"online"`
@@ -48,7 +47,6 @@ type serverStatus struct {
 	Online        bool
 	Err           string
 	Version       string
-	Protocol      int
 	OnlinePlayers int
 	MaxPlayers    int
 	Sample        []string
@@ -206,7 +204,6 @@ func pingJava(ctx context.Context, addr string, timeout time.Duration) *serverSt
 
 	st.Online = true
 	st.Latency = time.Since(start)
-	st.Protocol = status.Version.Protocol
 	st.Version = strings.TrimSpace(status.Version.Name)
 	if st.Version == "" {
 		st.Version = "unknown"

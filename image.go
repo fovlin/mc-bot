@@ -32,7 +32,6 @@ const (
 	bodyLineHeight  = 36
 	labelLineHeight = 24
 	labelGap        = 8
-	metaGap         = 20
 	sectionGap      = 26
 	dividerGap      = 20
 	playerRowHeight = 36
@@ -60,7 +59,9 @@ var (
 // fontCandidates are checked in order when the configuration does not name a
 // font. They cover common Linux/macOS/Windows CJK fonts.
 var fontCandidates = []string{
+	"/usr/share/fonts/adobe-source-han-sans/SourceHanSansCN-Medium.otf",
 	"/usr/share/fonts/adobe-source-han-sans/SourceHanSansCN-Regular.otf",
+	"/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
 	"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 	"/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
 	"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -140,9 +141,12 @@ func loadFontFile(path string) (*opentype.Font, error) {
 func newRendererFromFont(f *opentype.Font) (*renderer, error) {
 	newFace := func(size float64) (font.Face, error) {
 		return opentype.NewFace(f, &opentype.FaceOptions{
-			Size:    size,
-			DPI:     72,
-			Hinting: font.HintingFull,
+			Size: size,
+			DPI:  72,
+			// No hinting: hinted CJK glyphs snap stems to whole pixels and
+			// look uneven. The rasterizer's grayscale anti-aliasing keeps the
+			// outlines smooth instead.
+			Hinting: font.HintingNone,
 		})
 	}
 	title, err := newFace(34)
@@ -167,7 +171,6 @@ type serverCard struct {
 	statusText  string
 	statusColor color.RGBA
 	version     string
-	protocol    string
 	latency     string
 	players     string
 	motd        []string
@@ -216,7 +219,6 @@ func (r *renderer) layoutCard(s serverStatus) serverCard {
 
 	if s.Online {
 		c.version = truncate(r.body, s.Version, inner/2-24)
-		c.protocol = fmt.Sprintf("%d", s.Protocol)
 		c.latency = fmt.Sprintf("%d ms", s.Latency.Milliseconds())
 		c.players = fmt.Sprintf("%d / %d", s.OnlinePlayers, s.MaxPlayers)
 
@@ -250,7 +252,6 @@ func (r *renderer) layoutCard(s serverStatus) serverCard {
 		}
 		c.playerRows = (len(c.playerNames) + playerColumns - 1) / playerColumns
 
-		height += labelLineHeight + bodyLineHeight + metaGap
 		height += labelLineHeight + bodyLineHeight + sectionGap
 		height += labelLineHeight + labelGap + len(c.motd)*bodyLineHeight + sectionGap
 		height += labelLineHeight + labelGap + c.playerRows*playerRowHeight
@@ -332,11 +333,7 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 	if c.online {
 		half := (right - left) / 2
 		r.drawLabelValue(img, left, cy, "VERSION", c.version)
-		r.drawLabelValue(img, left+half, cy, "PROTOCOL", c.protocol)
-		cy += labelLineHeight + bodyLineHeight + metaGap
-
-		r.drawLabelValue(img, left, cy, "LATENCY", c.latency)
-		r.drawLabelValue(img, left+half, cy, "PLAYERS", c.players)
+		r.drawLabelValue(img, left+half, cy, "LATENCY", c.latency)
 		cy += labelLineHeight + bodyLineHeight + sectionGap
 
 		r.drawLabel(img, left, cy, "MOTD")
@@ -347,7 +344,7 @@ func (r *renderer) drawCard(img *image.RGBA, c serverCard, y int) {
 		}
 		cy += sectionGap
 
-		r.drawLabel(img, left, cy, "PLAYER SAMPLE")
+		r.drawLabel(img, left, cy, "PLAYER SAMPLE: "+"("+c.players+")")
 		cy += labelLineHeight + labelGap
 		colWidth := (right - left) / playerColumns
 		for i, name := range c.playerNames {

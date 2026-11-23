@@ -74,8 +74,8 @@ func TestPingJava(t *testing.T) {
 	if !st.Online {
 		t.Fatalf("expected online, got error %q", st.Err)
 	}
-	if st.Version != "Test 1.20.4" || st.Protocol != 765 {
-		t.Fatalf("version = %q / %d", st.Version, st.Protocol)
+	if st.Version != "Test 1.20.4" {
+		t.Fatalf("version = %q", st.Version)
 	}
 	if st.OnlinePlayers != 2 || st.MaxPlayers != 10 {
 		t.Fatalf("players = %d/%d", st.OnlinePlayers, st.MaxPlayers)

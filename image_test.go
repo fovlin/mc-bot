@@ -31,7 +31,6 @@ func onlineStatus(name string, players int) serverStatus {
 		Resolved:      "1.2.3.4:25565",
 		Online:        true,
 		Version:       "1.20.4",
-		Protocol:      765,
 		OnlinePlayers: players,
 		MaxPlayers:    100,
 		MOTD:          "Hello World",

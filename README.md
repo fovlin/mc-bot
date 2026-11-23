@@ -94,7 +94,7 @@ In a group, mention the bot when sending commands; the platform strips the @ pre
 
 Addresses may be `mc.example.com`, `mc.example.com:25566`, or IPv6. Without a port, the bot looks up the `_minecraft._tcp` SRV record first and falls back to port 25565.
 
-`/ls` pings with up to 8 concurrent workers (5s per server, 20s total), renders the version, MOTD, online counts and player sample into a dark card, and sends one image per server as a separate rich-media message. Group replies use `/v2/groups/{openid}/...`; private replies use `/v2/users/{openid}/...`.
+`/ls` pings with up to 8 concurrent workers (5s per server, 20s total), renders the version and latency, MOTD, online counts and player sample into a dark card, and sends one image per server as a separate rich-media message. Group replies use `/v2/groups/{openid}/...`; private replies use `/v2/users/{openid}/...`.
 
 - Long player lists make a card taller, up to 40 rows per card; long MOTDs are capped at 6 lines.
 - A dead server, failed SRV lookup or timeout does not affect the other cards; the card shows a red `OFFLINE` state and the reason.
